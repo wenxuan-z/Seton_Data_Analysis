@@ -1,0 +1,192 @@
+---
+title: "antibiotics_utilization"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(GGally)
+library(stringr)
+library(tidyr)
+library(lmtest)
+library(fastDummies)
+library(misty)
+library(tidyverse)
+```
+
+```{r}
+demo <- read_csv("/stor/work/FRI-BigDataBio/seton_data_analysis/SetonData_Mar/demo.csv")
+demo <- demo %>% select(-1)
+administered_meds <- read_csv("/stor/work/FRI-BigDataBio/seton_data_analysis/SetonData_Mar/administered_meds.csv")
+administered_meds <- administered_meds %>% select(-1)
+```
+
+```{r}
+antibiotics <- c('piperacillin-tazobactam', 'cefepime', 'meropenem', 'ciprofloxacin', 'azithromycin', 'vancomycin', 'ceftriaxone')
+
+common_administered_meds <- administered_meds %>% 
+  filter(grepl(paste(antibiotics, collapse="|"), tolower(med_generic_display)))
+
+status <- c('discharged', 'expired')
+
+facility <- demo %>% select(encounter_id_deident, facility_name, admit_quarter, admit_year)
+
+data <- facility %>% 
+  right_join(select(common_administered_meds, -patient_id_deident), by = 'encounter_id_deident')
+
+data <- data %>% mutate(med = NA)
+
+for (i in antibiotics){
+  for (j in 1:nrow(data)){
+    if (grepl(i, tolower(data$med_generic_display[j]))){
+      data$med[j] = i
+    }
+  }
+}
+
+data %>% dplyr::count(facility_name)
+
+data %>% dplyr::count(admit_quarter)
+
+```
+
+```{r}
+time_data <- data %>% group_by(admit_year, admit_quarter, facility_name) %>% summarise(mean_time = mean(start_dt_tm_indexed))
+
+time_data
+```
+
+```{r}
+ggplot(time_data, aes(x = facility_name, y = mean_time, fill = facility_name)) + geom_col() +
+  facet_wrap(~admit_quarter) +
+  labs(title = 'Mean Time by Quarter', y = 'Mean Time', x = 'Facility') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x=element_blank()
+        )
+
+ggplot(time_data, aes(x = admit_quarter, y = mean_time, fill = facility_name)) + geom_col() +
+  facet_wrap(~facility_name) +
+  labs(title = 'Mean time of antibiotic administration by Seton facility', y = 'Mean Time (days)', x = 'Quarter') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'none')
+```
+
+```{r}
+pos_time_data <- data %>% filter(start_dt_tm_indexed >= 0) %>% group_by(admit_year, admit_quarter, facility_name) %>% summarise(mean_time = mean(start_dt_tm_indexed))
+
+pos_time_data
+```
+
+```{r}
+# 2020
+pos_time_data_2020 <- pos_time_data %>% filter(admit_year == 2020)
+
+ggplot(pos_time_data_2020, aes(x = facility_name, y = mean_time, 
+                               fill = facility_name)) + geom_col() +
+  facet_wrap(~admit_quarter) +
+  labs(title = 'Mean Time by Quarter in 2020', y = 'Mean Time (days)', x = 'Facility') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x=element_blank())
+
+ggplot(pos_time_data_2020, aes(x = admit_quarter, y = mean_time, 
+                               fill = facility_name)) + geom_col() +
+  facet_wrap(~facility_name) +
+  labs(title = 'Mean time of antibiotic administration by Seton facility', 
+       y = 'Mean Time (days)', x = 'Quarter') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'none')
+```
+
+```{r}
+# 2021
+pos_time_data_2021 <- pos_time_data %>% filter(admit_year == 2021)
+
+ggplot(pos_time_data_2021, aes(x = facility_name, y = mean_time, 
+                               fill = facility_name)) + geom_col() +
+  facet_wrap(~admit_quarter) +
+  labs(title = 'Mean Time by Quarter in 2021', y = 'Mean Time (days)', x = 'Facility') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x=element_blank())
+
+ggplot(pos_time_data_2021, aes(x = admit_quarter, y = mean_time, 
+                               fill = facility_name)) + geom_col() +
+  facet_wrap(~facility_name) +
+  labs(title = 'Mean time of antibiotic administration by Seton facility', 
+       y = 'Mean Time (days)', x = 'Quarter') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.position = 'none')
+```
+
+
+ANOVA
+
+```{r}
+data$time <- str_c(data$admit_year, '-', data$admit_quarter)
+
+anova_seton <- data %>% 
+  select(facility_name, time, start_dt_tm_indexed) %>% 
+  filter(facility_name == 'TXAUS DELL SETON MEDICAL CTR') %>% 
+  filter(start_dt_tm_indexed >= 0)
+
+anova_seton$time <- as.factor(anova_seton$time)
+
+summary(aov(start_dt_tm_indexed~time,data=anova_seton))
+
+#TukeyHSD(aov(start_dt_tm_indexed~admit_quarter,data=anova_seton))
+```
+
+```{r}
+anova_northwest <- data %>% 
+  select(facility_name, time, start_dt_tm_indexed) %>% 
+  filter(facility_name == 'TXAUS SETON NORTHWEST HOSP') %>% 
+  filter(start_dt_tm_indexed >= 0)
+
+anova_northwest$time <- as.factor(anova_northwest$time)
+
+summary(aov(start_dt_tm_indexed~time,data=anova_northwest))
+```
+
+```{r}
+anova_williamson <- data %>% 
+  select(facility_name, time, start_dt_tm_indexed) %>% 
+  filter(facility_name == 'TXAUS SETON MED CTR WILLIAMSON') %>% 
+  filter(start_dt_tm_indexed >= 0)
+
+anova_williamson$time <- as.factor(anova_williamson$time)
+
+summary(aov(start_dt_tm_indexed~time,data=anova_williamson))
+```
+
+```{r}
+anova_austin <- data %>% 
+  select(facility_name, time, start_dt_tm_indexed) %>% 
+  filter(facility_name == 'TXAUS SETON MEDICAL CTR AUSTIN') %>% 
+  filter(start_dt_tm_indexed >= 0)
+
+anova_austin$time <- as.factor(anova_austin$time)
+
+summary(aov(start_dt_tm_indexed~time,data=anova_austin))
+```
+
+```{r}
+anova_children <- data %>% 
+  select(facility_name, time, start_dt_tm_indexed) %>% 
+  filter(facility_name == 'TXAUS DELL CHILDRENS MEDCTR TX') %>% 
+  filter(start_dt_tm_indexed >= 0)
+
+anova_children$time <- as.factor(anova_children$time)
+
+summary(aov(start_dt_tm_indexed~time,data=anova_children))
+```
+

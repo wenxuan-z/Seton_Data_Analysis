@@ -1,0 +1,262 @@
+---
+title: "SDS 379R"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(GGally)
+library(stringr)
+library(tidyr)
+library(misty)
+library(tidyverse)
+library(readxl)
+```
+
+```{r, warning=FALSE}
+demo <- read_csv("/stor/work/FRI-BigDataBio/seton_data_analysis/SetonData_Mar/demo.csv")
+demo <- demo %>% select(-1)
+
+consult_notes <- read_csv("/stor/work/FRI-BigDataBio/seton_data_analysis/SetonData_Mar/consult_notes.csv")
+consult_notes <- consult_notes %>% select(-1)
+
+diagnosis <- read_csv("/stor/work/FRI-BigDataBio/seton_data_analysis/SetonData_Mar/diagnoises.csv")
+diagnosis <- diagnosis %>% select(-1)
+
+diagnosis_code <- read_excel("/stor/work/FRI-BigDataBio/seton_data_analysis/diagnosis_code.xlsx")
+diagnosis_code <- diagnosis_code %>% select(1:2)
+
+oxygen <- read_csv("/stor/work/FRI-BigDataBio/seton_data_analysis/SetonData_Mar/oxygen.csv")
+
+labs <- read_csv("/stor/work/FRI-BigDataBio/seton_data_analysis/SetonData_Mar/labs.csv")
+```
+
+```{r}
+demo <- demo %>% mutate(outcome = NA)
+for (i in 1:nrow(demo)){
+  if (grepl('discharged', tolower(demo$discharge_disp[i]))){
+    demo$outcome[i] = 0
+  }
+  else if (grepl('expired', tolower(demo$discharge_disp[i]))){
+    demo$outcome[i] = 1
+  }
+}
+demo <- demo %>% filter(!is.na(outcome))
+
+expired_patients_id <- list((demo %>% select(patient_id_deident, outcome) %>% filter(outcome == 1) %>% distinct())$patient_id_deident)
+
+expired_patients_id <- expired_patients_id[[1]]
+
+new_demo <- demo
+
+new_demo$outcome[new_demo$patient_id_deident %in% expired_patients_id] <- 1
+
+consult_notes <- consult_notes %>% select(patient_id_deident, 
+                                          encounter_id_deident, document_title)
+
+palliative_consult <- consult_notes %>% 
+  filter(grepl(paste('palliative'), tolower(document_title)))
+
+palliative_consult <- distinct(palliative_consult, patient_id_deident,
+                               .keep_all = TRUE)
+
+palliative_consult <- palliative_consult %>% select(-patient_id_deident)
+```
+
+```{r}
+all_data <- demo %>% left_join(palliative_consult, by = 'encounter_id_deident')
+all_data <- all_data %>% mutate('palliative' = case_when(is.na(document_title) ~ '0',
+                                                    TRUE ~ '1'))
+
+all_data <- all_data %>% mutate('intubation' = case_when(is.na(vent_days) ~ '0',
+                                                    TRUE ~ '1'))
+
+all_data <- all_data %>% filter(!is.na(outcome))
+```
+
+Correlation between variables
+```{r}
+# outcome vs. age
+# point biserial correlation
+cor.test(all_data$age, all_data$outcome)
+```
+
+```{r}
+# outcome vs. gender
+chi_data <- all_data %>% select(gender, outcome)
+
+chi_data <- chi_data %>% group_by(gender) %>% dplyr::count(outcome) %>% 
+  pivot_wider(names_from = outcome, values_from = n) %>% 
+  filter(!is.na(gender))
+
+chi_data <- column_to_rownames(chi_data, 'gender')
+
+chi_data
+
+chisq <- chisq.test(chi_data)
+
+chisq
+```
+
+```{r}
+# outcome vs. ethnicity
+chi_data <- all_data %>% select(ethnicity, outcome)
+
+chi_data <- chi_data %>% group_by(ethnicity) %>% dplyr::count(outcome) %>% 
+  pivot_wider(names_from = outcome, values_from = n) %>% 
+  filter(!is.na(ethnicity))
+
+chi_data <- column_to_rownames(chi_data, 'ethnicity')
+
+chi_data
+
+chisq <- chisq.test(chi_data)
+
+chisq
+```
+```{r}
+# outcome vs. race
+chi_data <- all_data %>% select(race, outcome)
+
+chi_data <- chi_data %>% group_by(race) %>% dplyr::count(outcome) %>% 
+  pivot_wider(names_from = outcome, values_from = n) %>% 
+  filter(!is.na(race))
+
+chi_data <- column_to_rownames(chi_data, 'race')
+
+chi_data
+
+chisq <- chisq.test(chi_data)
+
+chisq
+```
+
+```{r, warning=FALSE}
+# outcome vs. pre-existing medical condition
+condition_data <- new_demo %>% left_join(diagnosis %>% filter(admit_date_indexed < 0) %>%  select(encounter_id_deident, diagnosis_description))
+
+condition_data %>% count(diagnosis_description) %>% arrange(-n) %>% filter(n > 150)
+
+condition_data <- condition_data %>% mutate(condition = NA)
+for (i in 1:nrow(condition_data)){
+  if (grepl('hypertension', tolower(condition_data$discharge_disp[i]))){
+    condition_data$condition[i] = 'hypertension'
+  }
+  else if (grepl('diabetes', tolower(condition_data$discharge_disp[i]))){
+    condition_data$condition[i] = 'diabetes'
+  }
+  else if (grepl('chest pain', tolower(condition_data$diagnosis_description[i]))){
+    condition_data$condition[i] = 'chest pain'
+  }
+  else if (grepl('anxiety disorder', tolower(condition_data$diagnosis_description[i]))){
+    condition_data$condition[i] = 'anxiety'
+  }
+  else if (grepl('hyperlipidemia', tolower(condition_data$diagnosis_description[i]))){
+    condition_data$condition[i] = 'hyperlipidemia'
+  }
+  else if (grepl('epigastric pain', tolower(condition_data$diagnosis_description[i]))){
+    condition_data$condition[i] = 'epigastric pain'
+  }
+  else if (grepl('depressive disorder', tolower(condition_data$diagnosis_description[i]))){
+    condition_data$condition[i] = 'depressive disorder'
+  }
+  else if (is.na(condition_data$diagnosis_description[i])) {
+    condition_data$condition[i] = 'none'
+  }
+  else {
+    condition_data$condition[i] = 'other'
+  }
+}
+
+condition_data <- condition_data %>% filter(condition != 'other')
+
+chi_data <- condition_data %>% select(condition, outcome)
+
+chi_data <- chi_data %>% group_by(condition) %>% dplyr::count(outcome) %>% 
+  pivot_wider(names_from = outcome, values_from = n)
+
+chi_data <- column_to_rownames(chi_data, 'condition')
+
+chi_data
+
+chisq <- chisq.test(chi_data)
+
+chisq
+```
+
+```{r}
+# logistic regression model with only age, gender, race, ethnicity and outcome
+model_data <- all_data %>% select(age, gender, race, ethnicity, outcome)
+
+my_glm <- glm(outcome ~ ., data = model_data, family=binomial()) 
+
+summary(my_glm)
+```
+
+Palliative care vs. pre-existing medical conditions
+```{r}
+model_data <- condition_data %>% left_join(palliative_consult, by = 'encounter_id_deident')
+
+model_data <- model_data %>% mutate('palliative' = case_when(is.na(document_title) ~ 0,
+                                                    TRUE ~ 1))
+
+chi_data <- model_data %>% select(condition, palliative)
+
+chi_data <- chi_data %>% group_by(condition) %>% dplyr::count(palliative) %>% 
+  pivot_wider(names_from = palliative, values_from = n)
+
+chi_data <- chi_data %>% filter(condition != 'none')
+
+chi_data <- column_to_rownames(chi_data, 'condition')
+
+chi_data[is.na(chi_data)] <- 0
+
+chi_data
+
+chisq <- chisq.test(chi_data)
+
+chisq
+
+```
+
+
+```{r}
+# full logistic regression model
+model_data_1 <- model_data %>% select(age, gender, race, ethnicity, condition, outcome)
+
+my_glm1 <- glm(outcome ~ ., data = model_data_1, family=binomial()) 
+
+summary(my_glm1)
+
+vis1 <- as.data.frame(coef(summary(my_glm1)))
+
+vis1 <- tibble::rownames_to_column(vis1, "x") %>% filter(x != '(Intercept)')
+
+vis1 %>% ggplot(aes(x, Estimate, fill = `Pr(>|z|)`)) + geom_col() +
+  scale_fill_gradient(low = 'yellow', high = 'red') +
+  theme_minimal() + 
+  labs(y = 'Estimate') +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))
+
+model_data_2 <- model_data %>% select(age, gender, race, ethnicity, condition, palliative)
+
+my_glm2 <- glm(palliative ~ ., data = model_data_2, family=binomial()) 
+
+summary(my_glm2)
+
+vis2 <- as.data.frame(coef(summary(my_glm2)))
+
+vis2 <- tibble::rownames_to_column(vis2, "x") %>% filter(x != '(Intercept)')
+
+vis2 %>% ggplot(aes(x, Estimate, fill = `Pr(>|z|)`)) + geom_col() +
+  scale_fill_gradient(low = 'yellow', high = 'red') +
+  theme_minimal() + 
+  labs(y = 'Estimate') +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1))
+```
+

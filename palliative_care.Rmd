@@ -1,0 +1,306 @@
+---
+title: "Palliative Care"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(GGally)
+library(stringr)
+library(tidyr)
+library(lmtest)
+library(fastDummies)
+library(misty)
+library(tidyverse)
+library(readxl)
+```
+
+Find out whether socioeconomic status, age, sex, and ethnicity have an impact on patient rates of palliative care consultation, infection, intubation (outcome variable), (days to vent), discharge, etc.
+```{r, warning=FALSE}
+demo <- read_csv("/stor/work/FRI-BigDataBio/seton_data_analysis/SetonData_Feb/demo.csv")
+demo <- demo %>% select(-1)
+
+consult_notes <- read_csv("/stor/work/FRI-BigDataBio/seton_data_analysis/SetonData_Feb/consult_notes.csv")
+consult_notes <- consult_notes %>% select(-1)
+
+diagnosis <- read_csv("/stor/work/FRI-BigDataBio/seton_data_analysis/SetonData_Feb/diagnoises.csv")
+diagnosis <- diagnosis %>% select(-1)
+
+diagnosis_code <- read_excel("/stor/work/FRI-BigDataBio/seton_data_analysis/diagnosis_code.xlsx")
+diagnosis_code <- diagnosis_code %>% select(1:2)
+
+oxygen <- read_csv("/stor/work/FRI-BigDataBio/seton_data_analysis/SetonData_Feb/oxygen.csv")
+```
+
+```{r}
+demo_data <- demo %>% select(patient_id_deident, encounter_id_deident, facility_name, race, ethnicity, gender, age, financial_class, discharge_disp, vent_days, vent_max_dt_indexed, vent_min_dt_indexed)
+
+consult_notes <- consult_notes %>% select(patient_id_deident, 
+                                          encounter_id_deident, document_title)
+
+palliative_consult <- consult_notes %>% 
+  filter(grepl(paste('palliative'), tolower(document_title)))
+
+palliative_consult <- distinct(palliative_consult, patient_id_deident,
+                               .keep_all = TRUE)
+
+palliative_consult <- palliative_consult %>% select(-patient_id_deident)
+
+diagnosis_code_infection <- diagnosis_code %>% 
+  filter(grepl(paste('infection'), tolower(`SHORT DESCRIPTION (VALID ICD-10 FY2022)`)))
+
+infection_code <- list(diagnosis_code_infection$CODE)[[1]]
+
+diagnosis <- diagnosis %>% mutate_at('diagnosis_code', str_remove_all, '\\.')
+
+infection_data <- diagnosis %>% filter(diagnosis_code %in% infection_code) %>% select(encounter_id_deident, diagnosis_code, diagnosis_description)
+```
+
+```{r}
+all_data <- demo_data %>% left_join(palliative_consult, by = 'encounter_id_deident')
+all_data <- all_data %>% mutate('palliative' = case_when(is.na(document_title) ~ '0',
+                                                    TRUE ~ '1'))
+
+all_data <- all_data %>% left_join(infection_data, by = 'encounter_id_deident')
+all_data <- all_data %>% mutate('infection' = case_when(is.na(diagnosis_code) ~ '0',
+                                                    TRUE ~ '1'))
+
+all_data <- all_data %>% mutate('intubation' = case_when(is.na(vent_days) ~ '0',
+                                                    TRUE ~ '1'))
+
+all_data <- all_data %>% mutate(outcome = NA)
+for (i in 1:nrow(all_data)){
+  if (grepl('discharged', tolower(all_data$discharge_disp[i]))){
+    all_data$outcome[i] = 'discharged'
+  }
+  else if (grepl('expired', tolower(all_data$discharge_disp[i]))){
+    all_data$outcome[i] = 'expired'
+  }
+}
+```
+
+race vs. palliative care
+```{r}
+# chi-square test
+chi_data <- all_data %>% select(race, palliative)
+
+chi_data <- chi_data %>% group_by(race) %>% dplyr::count(palliative) %>% 
+  pivot_wider(names_from = palliative, values_from = n)
+
+chi_data <- column_to_rownames(chi_data, 'race')
+
+chi_data
+
+chisq <- chisq.test(chi_data)
+
+chisq
+
+mosaicplot(chi_data, col = hcl(c(120, 10)), main = 'Race & Palliative Care')
+
+# logistic regression
+palliative_race <- all_data %>% select(patient_id_deident, race, palliative) %>% unique()
+palliative_race <- palliative_race %>% filter(race != 'MISSING')
+palliative_race <- dummy_cols(palliative_race)
+palliative_race <- palliative_race %>% select(-c(race, palliative_0, palliative_1))
+palliative_race$palliative <- as.factor(palliative_race$palliative)
+
+palliative_glm <- glm(palliative ~ `race_BLACK OR AFRICAN AMERICAN` + race_OTHER, data = palliative_race, family=binomial()) 
+
+summary(palliative_glm)
+
+phi_result <- misty::cor.phi(palliative_race %>% select(-patient_id_deident))$result
+
+phi_result <- as.data.frame(phi_result)
+
+phi_result
+```
+
+ethnicity vs. palliative care
+```{r}
+# chi-square test
+chi_data <- all_data %>% select(ethnicity, palliative)
+
+chi_data <- chi_data %>% group_by(ethnicity) %>% dplyr::count(palliative) %>% 
+  pivot_wider(names_from = palliative, values_from = n)
+
+chi_data <- chi_data %>% filter(!is.na(ethnicity))
+
+chi_data <- column_to_rownames(chi_data, 'ethnicity')
+
+chi_data
+
+chisq <- chisq.test(chi_data)
+
+chisq
+
+mosaicplot(chi_data, col = hcl(c(120, 10)), main = 'Ethnicity & Palliative Care')
+
+# logistic regression
+palliative_ethnicity <- all_data %>% select(patient_id_deident, ethnicity, palliative) %>% unique()
+palliative_ethnicity <- palliative_ethnicity %>% filter((ethnicity != 'UNKNOWN') & (!is.na(ethnicity)))
+palliative_ethnicity <- dummy_cols(palliative_ethnicity)
+palliative_ethnicity <- palliative_ethnicity %>% select(-c(ethnicity, palliative_0, palliative_1))
+palliative_ethnicity$palliative <- as.numeric(palliative_ethnicity$palliative)
+
+palliative_glm <- glm(palliative ~ `ethnicity_HISPANIC OR LATINO`, data = palliative_ethnicity, family=binomial())
+
+summary(palliative_glm)
+
+phi_result <- misty::cor.phi(palliative_ethnicity %>% select(-patient_id_deident))$result
+
+phi_result <- as.data.frame(phi_result)
+
+phi_result
+```
+
+age vs. palliative care
+```{r}
+# logistic regression
+palliative_age <- all_data %>% select(patient_id_deident, age, palliative) %>% unique()
+palliative_age <- palliative_age %>% filter(!is.na(age))
+palliative_age <- palliative_age %>% select(-patient_id_deident)
+palliative_age$palliative <- as.numeric(palliative_age$palliative)
+
+palliative_glm <- glm(palliative ~ age, data = palliative_age, family=binomial())
+
+summary(palliative_glm)
+
+# point biserial correlation
+cor.test(palliative_age$age, palliative_age$palliative)
+```
+
+gender vs. palliative care
+```{r}
+# chi-square test
+chi_data <- all_data %>% select(gender, palliative)
+
+chi_data <- chi_data %>% group_by(gender) %>% dplyr::count(palliative) %>% 
+  pivot_wider(names_from = palliative, values_from = n)
+
+chi_data <- chi_data %>% filter(!is.na(gender))
+
+chi_data <- column_to_rownames(chi_data, 'gender')
+
+chi_data
+
+chisq <- chisq.test(chi_data)
+
+chisq
+
+mosaicplot(chi_data, col = hcl(c(120, 10)), main = 'Race & Palliative Care')
+
+# logistic regression
+palliative_gender <- all_data %>% select(patient_id_deident, gender, palliative) %>% unique()
+palliative_gender <- palliative_gender %>% filter(!is.na(gender))
+palliative_gender <- dummy_cols(palliative_gender)
+palliative_gender <- palliative_gender %>% select(-c(gender, palliative_0, palliative_1))
+palliative_gender$palliative <- as.factor(palliative_gender$palliative)
+
+palliative_glm <- glm(palliative ~ gender_F, data = palliative_gender, family=binomial()) 
+
+summary(palliative_glm)
+
+phi_result <- misty::cor.phi(palliative_gender %>% select(-patient_id_deident))$result
+
+phi_result <- as.data.frame(phi_result)
+
+phi_result
+```
+
+intubation vs. palliative care
+```{r}
+# chi-square test
+chi_data <- all_data %>% select(intubation, palliative)
+
+chi_data <- chi_data %>% group_by(intubation) %>% dplyr::count(palliative) %>% 
+  pivot_wider(names_from = palliative, values_from = n)
+
+chi_data <- column_to_rownames(chi_data, 'intubation')
+
+chi_data
+
+chisq <- chisq.test(chi_data)
+
+chisq
+
+mosaicplot(chi_data, col = hcl(c(120, 10)), main = 'intubation & Palliative Care')
+```
+
+Expired patients (stop index only)
+```{r}
+expired <- demo %>% filter(discharge_disp == 'EXPIRED') %>% 
+  select(patient_id_deident, encounter_id_deident, disch_date_indexed, 
+         death_date_indexed)
+
+expired <- expired %>% mutate(death_date_indexed = case_when(is.na(death_date_indexed) ~ disch_date_indexed, TRUE ~ death_date_indexed))
+
+expired_meds <- expired %>% left_join((administered_meds %>% 
+                         select(encounter_id_deident, med_generic_display,
+                                stop_dt_tm_indexed)),
+                      by = 'encounter_id_deident')
+
+expired_meds <- expired_meds %>% 
+  filter(death_date_indexed - stop_dt_tm_indexed <= 2)
+
+distinct(expired_meds, patient_id_deident, med_generic_display, .keep_all = TRUE) %>%
+  count(med_generic_display) %>% arrange(-n) %>% head(6)
+```
+
+(start and stop index)
+```{r}
+expired <- demo %>% filter(discharge_disp == 'EXPIRED') %>% 
+  select(patient_id_deident, encounter_id_deident, death_date_indexed)
+
+expired_meds <- expired %>% left_join((administered_meds %>% 
+                         select(encounter_id_deident, med_generic_display,
+                                start_dt_tm_indexed ,stop_dt_tm_indexed)),
+                      by = 'encounter_id_deident')
+
+expired_meds <- expired_meds %>% 
+  filter((death_date_indexed - stop_dt_tm_indexed <= 2) & 
+           (death_date_indexed - start_dt_tm_indexed <= 2))
+
+distinct(expired_meds, patient_id_deident, med_generic_display, .keep_all = TRUE) %>% count(med_generic_display) %>% arrange(-n) %>% head(15)
+```
+
+facility vs. palliative care
+```{r}
+# chi-square test
+chi_data <- all_data %>% select(facility_name, palliative)
+
+chi_data <- chi_data %>% group_by(facility_name) %>% dplyr::count(palliative) %>% 
+  pivot_wider(names_from = palliative, values_from = n)
+
+chi_data <- column_to_rownames(chi_data, 'facility_name')
+
+chi_data
+
+chisq <- chisq.test(chi_data)
+
+chisq
+
+mosaicplot(chi_data, col = hcl(c(120, 10)), main = 'Facility & Palliative Care')
+
+# logistic regression
+palliative_facility <- all_data %>% select(patient_id_deident, facility_name, palliative) %>% unique()
+palliative_facility <- dummy_cols(palliative_facility)
+palliative_facility <- palliative_facility %>% select(-c(facility_name, palliative_0, palliative_1))
+palliative_facility$palliative <- as.factor(palliative_facility$palliative)
+palliative_facility <- palliative_facility %>% select(-patient_id_deident)
+palliative_facility <- palliative_facility %>% select(-3)
+
+palliative_glm <- glm(palliative ~ ., data = palliative_facility, family=binomial()) 
+
+summary(palliative_glm)
+
+phi_result <- misty::cor.phi(palliative_facility)$result
+
+phi_result <- as.data.frame(phi_result)
+
+phi_result
+```
